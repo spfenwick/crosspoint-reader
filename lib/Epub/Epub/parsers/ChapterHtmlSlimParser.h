@@ -119,6 +119,7 @@ class ChapterHtmlSlimParser final : public Print {
   int lastReportedProgress = -1;
   int progressStepPercent = 0;
   bool streamFailed = false;
+  bool oomDetected_ = false;  // set by heap guard or nothrow failures; distinguishes OOM from XML errors
   uint32_t streamStartTimeMs = 0;
 
   // Footnote link tracking
@@ -191,6 +192,7 @@ class ChapterHtmlSlimParser final : public Print {
   bool setup(size_t totalInflatedSize);
   bool finalize();
   [[nodiscard]] bool streamSucceeded() const { return !streamFailed; }
+  [[nodiscard]] bool hadOom() const { return oomDetected_; }
 
   // Print interface — fed by Epub::readItemContentsToStream.
   size_t write(uint8_t) override;
