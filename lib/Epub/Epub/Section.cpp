@@ -12,7 +12,7 @@
 #include "parsers/ChapterHtmlSlimParser.h"
 
 namespace {
-constexpr uint8_t SECTION_FILE_VERSION = 24;
+constexpr uint8_t SECTION_FILE_VERSION = 25;
 constexpr uint32_t HEADER_SIZE = sizeof(uint8_t) +   // SECTION_FILE_VERSION
                                  sizeof(int) +       // fontId
                                  sizeof(float) +     // lineCompression
@@ -20,11 +20,12 @@ constexpr uint32_t HEADER_SIZE = sizeof(uint8_t) +   // SECTION_FILE_VERSION
                                  sizeof(uint8_t) +   // paragraphAlignment
                                  sizeof(uint16_t) +  // viewportWidth
                                  sizeof(uint16_t) +  // viewportHeight
-                                 sizeof(uint16_t) +  // pageCount (stored as 16-bit in header)
                                  sizeof(bool) +      // hyphenationEnabled
                                  sizeof(bool) +      // embeddedStyle
                                  sizeof(bool) +      // bionicReadingEnabled
                                  sizeof(uint8_t) +   // imageRendering
+                                 sizeof(uint8_t) +   // isPartial (0 = complete, 1 = OOM-truncated)
+                                 sizeof(uint16_t) +  // pageCount (stored as 16-bit in header)
                                  sizeof(uint32_t) +  // page LUT offset
                                  sizeof(uint32_t) +  // anchor map offset
                                  sizeof(uint32_t);   // paragraph LUT offset
@@ -192,9 +193,9 @@ void Section::writeSectionFileHeader(const int fontId, const float lineCompressi
   }
   static_assert(HEADER_SIZE == sizeof(SECTION_FILE_VERSION) + sizeof(fontId) + sizeof(lineCompression) +
                                    sizeof(extraParagraphSpacing) + sizeof(paragraphAlignment) + sizeof(viewportWidth) +
-                                   sizeof(viewportHeight) + sizeof(pageCount) + sizeof(hyphenationEnabled) +
-                                   sizeof(embeddedStyle) + sizeof(bionicReadingEnabled) + sizeof(imageRendering) +
-                                   sizeof(uint32_t) + sizeof(uint32_t) + sizeof(uint32_t),
+                                   sizeof(viewportHeight) + sizeof(hyphenationEnabled) + sizeof(embeddedStyle) +
+                                   sizeof(bionicReadingEnabled) + sizeof(imageRendering) + sizeof(uint8_t) +
+                                   sizeof(pageCount) + sizeof(uint32_t) + sizeof(uint32_t) + sizeof(uint32_t),
                 "Header size mismatch");
   serialization::writePod(file, SECTION_FILE_VERSION);
   serialization::writePod(file, fontId);
@@ -207,6 +208,7 @@ void Section::writeSectionFileHeader(const int fontId, const float lineCompressi
   serialization::writePod(file, embeddedStyle);
   serialization::writePod(file, bionicReadingEnabled);
   serialization::writePod(file, imageRendering);
+  serialization::writePod(file, uint8_t{0});   // isPartial placeholder (patched to 1 on OOM truncation)
   serialization::writePod(file, pageCount);  // Placeholder for page count (will be initially 0, patched later)
   serialization::writePod(file, static_cast<uint32_t>(0));  // Placeholder for LUT offset (patched later)
   serialization::writePod(file, static_cast<uint32_t>(0));  // Placeholder for anchor map offset (patched later)
@@ -265,6 +267,13 @@ bool Section::loadSectionFile(const int fontId, const float lineCompression, con
       clearCache();  // closes file before removal
       return false;
     }
+  }
+
+  uint8_t isPartialFlag = 0;
+  serialization::readPod(file, isPartialFlag);
+  isPartialIndex = (isPartialFlag != 0);
+  if (isPartialIndex) {
+    LOG_ERR("SCT", "Loaded partial section index (indexing stopped early due to low heap)");
   }
 
   serialization::readPod(file, pageCount);
@@ -439,15 +448,21 @@ bool Section::createSectionFile(const int fontId, const float lineCompression, c
 
   const uint32_t phaseFinalizeStart = millis();
   if (!success) {
-    LOG_ERR("SCT", "Failed to parse XML and build pages (stream=%d finalize=%d)", streamOk ? 1 : 0, finalizeOk ? 1 : 0);
-    file.close();
-    Storage.remove(filePath.c_str());
-    anchorSideFile.close();
-    Storage.remove(anchorSidePath.c_str());
-    if (cssParser) {
-      cssParser->clear();
+    const bool canSavePartial = visitor.hadOom() && !lut.empty();
+    if (!canSavePartial) {
+      LOG_ERR("SCT", "Failed to parse XML and build pages (stream=%d finalize=%d)", streamOk ? 1 : 0,
+              finalizeOk ? 1 : 0);
+      file.close();
+      Storage.remove(filePath.c_str());
+      anchorSideFile.close();
+      Storage.remove(anchorSidePath.c_str());
+      if (cssParser) {
+        cssParser->clear();
+      }
+      return false;
     }
-    return false;
+    LOG_ERR("SCT", "Indexing stopped early (low heap) after %u pages; saving partial section file",
+            static_cast<uint32_t>(lut.size()));
   }
   const uint32_t fileSize = static_cast<uint32_t>(inflatedSize);
 
@@ -510,6 +525,15 @@ bool Section::createSectionFile(const int fontId, const float lineCompression, c
   serialization::writePod(file, lutOffset);
   serialization::writePod(file, anchorMapOffset);
   serialization::writePod(file, paragraphLutOffset);
+
+  if (visitor.hadOom()) {
+    // Patch isPartial flag: sits one byte before pageCount in the header
+    file.seek(HEADER_SIZE - sizeof(uint32_t) * 3 - sizeof(pageCount) - sizeof(uint8_t));
+    serialization::writePod(file, uint8_t{1});
+    isPartialIndex = true;
+    LOG_ERR("SCT", "Saved partial section file (%u pages) due to low heap during indexing", pageCount);
+  }
+
   file.close();
   if (cssParser) {
     cssParser->clear();

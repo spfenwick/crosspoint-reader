@@ -34,6 +34,7 @@ constexpr size_t PARSE_BUFFER_SIZE = 1024;
 constexpr size_t IMAGE_EXTRACT_CHUNK_SIZE = 1024;
 constexpr size_t MIN_FREE_HEAP_FOR_IMAGE_EXTRACT = 48 * 1024;
 constexpr size_t MIN_MAX_ALLOC_FOR_IMAGE_EXTRACT = 36 * 1024;
+constexpr uint32_t MIN_FREE_HEAP_FOR_INDEXING = 40 * 1024;
 
 const char* BLOCK_TAGS[] = {"p", "li", "div", "br", "blockquote", "pre"};
 constexpr int NUM_BLOCK_TAGS = sizeof(BLOCK_TAGS) / sizeof(BLOCK_TAGS[0]);
@@ -216,7 +217,15 @@ void ChapterHtmlSlimParser::emitPage(uint32_t xhtmlByteOffset) {
   paragraphLutPerPage.push_back({xhtmlByteOffset, xpathParagraphIndex});
   completePageFn(std::move(currentPage));
   completedPageCount++;
-  currentPage.reset(new Page());
+  auto* newPage = new (std::nothrow) Page();
+  if (!newPage) {
+    LOG_ERR("EHP", "OOM: failed to allocate Page in emitPage");
+    streamFailed = true;
+    oomDetected_ = true;
+    XML_StopParser(activeParser, XML_FALSE);
+    return;
+  }
+  currentPage.reset(newPage);
   currentPageNextY = 0;
 }
 
@@ -273,7 +282,15 @@ void ChapterHtmlSlimParser::startNewTextBlock(const BlockStyle& blockStyle) {
     if (onAnchorFn) onAnchorFn(pendingAnchorId, static_cast<uint16_t>(completedPageCount));
     pendingAnchorId.clear();
   }
-  currentTextBlock.reset(new ParsedText(extraParagraphSpacing, hyphenationEnabled, blockStyle, bionicReadingEnabled));
+  auto* newBlock = new (std::nothrow) ParsedText(extraParagraphSpacing, hyphenationEnabled, blockStyle, bionicReadingEnabled);
+  if (!newBlock) {
+    LOG_ERR("EHP", "OOM: failed to allocate ParsedText");
+    streamFailed = true;
+    oomDetected_ = true;
+    XML_StopParser(activeParser, XML_FALSE);
+    return;
+  }
+  currentTextBlock.reset(newBlock);
   wordsExtractedInBlock = 0;
 }
 
@@ -706,11 +723,15 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
                     return;
                   }
                 } else if (!self->currentPage) {
-                  self->currentPage.reset(new Page());
-                  if (!self->currentPage) {
-                    LOG_ERR("EHP", "Failed to create initial page");
+                  auto* newPage = new (std::nothrow) Page();
+                  if (!newPage) {
+                    LOG_ERR("EHP", "OOM: failed to allocate Page for image");
+                    self->streamFailed = true;
+                    self->oomDetected_ = true;
+                    XML_StopParser(self->activeParser, XML_FALSE);
                     return;
                   }
+                  self->currentPage.reset(newPage);
                   self->currentPageNextY = 0;
                 }
 
@@ -1512,6 +1533,12 @@ size_t ChapterHtmlSlimParser::write(const uint8_t* buffer, const size_t size) {
   size_t remaining = size;
   const uint8_t* cursor = buffer;
   while (remaining > 0) {
+    if (ESP.getFreeHeap() < MIN_FREE_HEAP_FOR_INDEXING) {
+      LOG_ERR("EHP", "Low heap (%u bytes) during indexing, aborting parse", ESP.getFreeHeap());
+      streamFailed = true;
+      oomDetected_ = true;
+      return 0;
+    }
     const size_t chunk = remaining < PARSE_BUFFER_SIZE ? remaining : PARSE_BUFFER_SIZE;
     void* const buf = XML_GetBuffer(activeParser, static_cast<int>(chunk));
     if (!buf) {
@@ -1576,7 +1603,8 @@ bool ChapterHtmlSlimParser::finalize() {
 
   // Process last page if there is still text. Done unconditionally so that a partial
   // success scenario still flushes whatever pages were produced.
-  if (currentTextBlock) {
+  // Skip on OOM: the current text block is mid-paragraph and its layout would be wrong.
+  if (currentTextBlock && !oomDetected_) {
     makePages();
     if (!pendingAnchorId.empty()) {
       if (onAnchorFn) onAnchorFn(pendingAnchorId, static_cast<uint16_t>(completedPageCount));
@@ -1587,6 +1615,11 @@ bool ChapterHtmlSlimParser::finalize() {
     currentTextBlock.reset();
   }
 
+  if (oomDetected_ && completedPageCount > 0) {
+    // Partial success: pages were indexed before heap ran low.
+    // Caller checks hadOom() to save a partial section file instead of discarding.
+    return true;
+  }
   return success;
 }
 
@@ -1596,7 +1629,15 @@ ParsedText::LineProcessResult ChapterHtmlSlimParser::addLineToPage(std::shared_p
   const int lineHeight = renderer.getLineHeight(fontId) * lineCompression;
 
   if (!currentPage) {
-    currentPage.reset(new Page());
+    auto* newPage = new (std::nothrow) Page();
+    if (!newPage) {
+      LOG_ERR("EHP", "OOM: failed to allocate Page in addLineToPage");
+      streamFailed = true;
+      oomDetected_ = true;
+      XML_StopParser(activeParser, XML_FALSE);
+      return ParsedText::LineProcessResult::Accepted;
+    }
+    currentPage.reset(newPage);
     currentPageNextY = 0;
   }
 
@@ -1636,7 +1677,15 @@ void ChapterHtmlSlimParser::makePages() {
   }
 
   if (!currentPage) {
-    currentPage.reset(new Page());
+    auto* newPage = new (std::nothrow) Page();
+    if (!newPage) {
+      LOG_ERR("EHP", "OOM: failed to allocate Page in makePages");
+      streamFailed = true;
+      oomDetected_ = true;
+      XML_StopParser(activeParser, XML_FALSE);
+      return;
+    }
+    currentPage.reset(newPage);
     currentPageNextY = 0;
   }
 

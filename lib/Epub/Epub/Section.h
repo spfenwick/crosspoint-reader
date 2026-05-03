@@ -54,6 +54,7 @@ class Section {
  public:
   uint16_t pageCount = 0;
   int currentPage = 0;
+  bool isPartialIndex = false;  // true when indexing stopped early due to low heap
 
   explicit Section(const std::shared_ptr<Epub>& epub, const int spineIndex, GfxRenderer& renderer)
       : epub(epub), spineIndex(spineIndex), renderer(renderer) {}
