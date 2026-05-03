@@ -85,7 +85,7 @@ class ChapterHtmlSlimParser final : public Print {
 
   // Anchor-to-page mapping: tracks which page each HTML id attribute lands on
   int completedPageCount = 0;
-  std::vector<std::pair<std::string, uint16_t>> anchorData;
+  std::function<void(const std::string&, uint16_t)> onAnchorFn;
   std::string pendingAnchorId;  // deferred until after previous text block is flushed
   std::vector<std::string> tocAnchors;
 
@@ -154,7 +154,8 @@ class ChapterHtmlSlimParser final : public Print {
       std::shared_ptr<Epub> epub, GfxRenderer& renderer, const int fontId, const float lineCompression,
       const bool extraParagraphSpacing, const uint8_t paragraphAlignment, const uint16_t viewportWidth,
       const uint16_t viewportHeight, const bool hyphenationEnabled, const bool bionicReadingEnabled,
-      const std::function<void(std::unique_ptr<Page>)>& completePageFn, const bool embeddedStyle,
+      const std::function<void(std::unique_ptr<Page>)>& completePageFn,
+      const std::function<void(const std::string&, uint16_t)>& onAnchorFn, const bool embeddedStyle,
       const std::string& contentBase, const std::string& imageBasePath, const uint8_t imageRendering = 0,
       std::vector<std::string> tocAnchors = {}, const std::function<void(int)>& progressFn = nullptr,
       const CssParser* cssParser = nullptr)
@@ -170,6 +171,7 @@ class ChapterHtmlSlimParser final : public Print {
         hyphenationEnabled(hyphenationEnabled),
         bionicReadingEnabled(bionicReadingEnabled),
         completePageFn(completePageFn),
+        onAnchorFn(onAnchorFn),
         progressFn(progressFn),
         cssParser(cssParser),
         embeddedStyle(embeddedStyle),
@@ -196,6 +198,5 @@ class ChapterHtmlSlimParser final : public Print {
 
   ParsedText::LineProcessResult addLineToPage(std::shared_ptr<TextBlock> line, bool lineEndsWithHyphenatedWord,
                                               bool suppressHyphenationRetry);
-  const std::vector<std::pair<std::string, uint16_t>>& getAnchors() const { return anchorData; }
   const std::vector<ParagraphLutEntry>& getParagraphLutPerPage() const { return paragraphLutPerPage; }
 };

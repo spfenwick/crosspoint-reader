@@ -247,7 +247,7 @@ void ChapterHtmlSlimParser::startNewTextBlock(const BlockStyle& blockStyle) {
             emitPage(lastBodyChildByteOffset);
           }
         }
-        anchorData.push_back({std::move(pendingAnchorId), static_cast<uint16_t>(completedPageCount)});
+        if (onAnchorFn) onAnchorFn(pendingAnchorId, static_cast<uint16_t>(completedPageCount));
         pendingAnchorId.clear();
       }
       wordsExtractedInBlock = 0;
@@ -266,7 +266,7 @@ void ChapterHtmlSlimParser::startNewTextBlock(const BlockStyle& blockStyle) {
   }
   // Record deferred anchor after previous block is flushed (and any TOC page break)
   if (!pendingAnchorId.empty()) {
-    anchorData.push_back({std::move(pendingAnchorId), static_cast<uint16_t>(completedPageCount)});
+    if (onAnchorFn) onAnchorFn(pendingAnchorId, static_cast<uint16_t>(completedPageCount));
     pendingAnchorId.clear();
   }
   currentTextBlock.reset(new ParsedText(extraParagraphSpacing, hyphenationEnabled, blockStyle, bionicReadingEnabled));
@@ -1523,7 +1523,7 @@ bool ChapterHtmlSlimParser::finalize() {
   if (currentTextBlock) {
     makePages();
     if (!pendingAnchorId.empty()) {
-      anchorData.push_back({std::move(pendingAnchorId), static_cast<uint16_t>(completedPageCount)});
+      if (onAnchorFn) onAnchorFn(pendingAnchorId, static_cast<uint16_t>(completedPageCount));
       pendingAnchorId.clear();
     }
     emitPage(0u);  // post-parse: no byte offset available
