@@ -29,7 +29,6 @@ class Section {
   };
   std::vector<TocBoundary> tocBoundaries;
 
-  void buildTocBoundaries(const std::vector<std::pair<std::string, uint16_t>>& anchors);
   void buildTocBoundariesFromFile(FsFile& f);
 
   // Open the section file and seek to the first paragraph LUT entry, validating the header

@@ -388,10 +388,29 @@ bool Section::createSectionFile(const int fontId, const float lineCompression, c
     }
   }
 
+  // Open a side file to stream anchor data during parsing, avoiding in-memory accumulation.
+  // Anchors (id → page) are written here as they are committed, then copied into the section
+  // file after all page data has been written. Eliminates ~48 bytes of heap per anchor for
+  // chapters with long id strings (e.g. "introduction-endnote-42-text").
+  const std::string anchorSidePath = filePath + ".tmp";
+  FsFile anchorSideFile;
+  uint16_t anchorCount = 0;
+  if (!Storage.openFileForWrite("SCT", anchorSidePath, anchorSideFile)) {
+    LOG_ERR("SCT", "Failed to open anchor side file");
+    file.close();
+    Storage.remove(filePath.c_str());
+    return false;
+  }
+
   ChapterHtmlSlimParser visitor(
       epub, renderer, fontId, lineCompression, extraParagraphSpacing, paragraphAlignment, viewportWidth, viewportHeight,
       hyphenationEnabled, bionicReadingEnabled,
       [this, &lut](std::unique_ptr<Page> page) { lut.emplace_back(this->onPageComplete(std::move(page))); },
+      [&anchorSideFile, &anchorCount](const std::string& id, uint16_t page) {
+        serialization::writeString(anchorSideFile, id);
+        serialization::writePod(anchorSideFile, page);
+        anchorCount++;
+      },
       embeddedStyle, contentBase, imageBasePath, imageRendering, std::move(tocAnchors), progressFn, cssParser);
   Hyphenator::setPreferredLanguage(epub->getLanguage());
 
@@ -399,6 +418,8 @@ bool Section::createSectionFile(const int fontId, const float lineCompression, c
     LOG_ERR("SCT", "Failed to set up chapter parser");
     file.close();
     Storage.remove(filePath.c_str());
+    anchorSideFile.close();
+    Storage.remove(anchorSidePath.c_str());
     if (cssParser) {
       cssParser->clear();
     }
@@ -421,6 +442,8 @@ bool Section::createSectionFile(const int fontId, const float lineCompression, c
     LOG_ERR("SCT", "Failed to parse XML and build pages (stream=%d finalize=%d)", streamOk ? 1 : 0, finalizeOk ? 1 : 0);
     file.close();
     Storage.remove(filePath.c_str());
+    anchorSideFile.close();
+    Storage.remove(anchorSidePath.c_str());
     if (cssParser) {
       cssParser->clear();
     }
@@ -443,17 +466,25 @@ bool Section::createSectionFile(const int fontId, const float lineCompression, c
     LOG_ERR("SCT", "Failed to write LUT due to invalid page positions");
     file.close();
     Storage.remove(filePath.c_str());
+    anchorSideFile.close();
+    Storage.remove(anchorSidePath.c_str());
     return false;
   }
 
-  // Write anchor-to-page map for fragment navigation (TOC + footnote targets)
+  // Write anchor-to-page map for fragment navigation (TOC + footnote targets).
+  // Copy from the side file written during parsing; no in-memory anchor vector needed.
   const uint32_t anchorMapOffset = file.position();
-  const auto& anchors = visitor.getAnchors();
-  serialization::writePod(file, static_cast<uint16_t>(anchors.size()));
-  for (const auto& [anchor, page] : anchors) {
-    serialization::writeString(file, anchor);
-    serialization::writePod(file, page);
+  serialization::writePod(file, anchorCount);
+  anchorSideFile.seek(0);
+  {
+    uint8_t copyBuf[64];
+    size_t n;
+    while ((n = anchorSideFile.read(copyBuf, sizeof(copyBuf))) > 0) {
+      file.write(copyBuf, n);
+    }
   }
+  anchorSideFile.close();
+  Storage.remove(anchorSidePath.c_str());
 
   // Write per-page paragraph LUT: count + array of {xhtmlByteOffset(u32), paragraphIndex(u16)}.
   // The byte offset lets findXPathForParagraph seek near the target paragraph without scanning
@@ -484,14 +515,13 @@ bool Section::createSectionFile(const int fontId, const float lineCompression, c
     cssParser->clear();
   }
 
-  buildTocBoundaries(anchors);
-
   // Cache the LUT in memory and open the file for reading so that
   // subsequent loadPageFromSectionFile() calls can seek directly without re-opening.
   if (!Storage.openFileForRead("SCT", filePath, file)) {
     LOG_ERR("SCT", "Failed to open section file for reading after creation");
     return false;
   }
+  buildTocBoundariesFromFile(file);
   this->lut = std::move(lut);
   const uint32_t finalizeMs = millis() - phaseFinalizeStart;
   const uint32_t totalMs = millis() - phaseTotalStart;
@@ -523,56 +553,10 @@ std::unique_ptr<Page> Section::loadPageFromSectionFile() {
   // File is intentionally NOT closed; stays open for the next page load
 }
 
-// Resolve TOC anchor-to-page mappings from the parser's in-memory anchor vector.
-// Called after createSectionFile when anchors are already in memory.
-// See buildTocBoundariesFromFile for the on-disk variant; the two are kept separate
-// because the anchor resolution has fundamentally different iteration patterns
-// (scan in-memory vector vs. stream from file with early exit).
-void Section::buildTocBoundaries(const std::vector<std::pair<std::string, uint16_t>>& anchors) {
-  const int startTocIndex = epub->getTocIndexForSpineIndex(spineIndex);
-  if (startTocIndex < 0) return;
-
-  // Count TOC entries for this spine and how many have anchors to resolve
-  const int tocCount = epub->getTocItemsCount();
-  uint16_t totalEntries = 0;
-  uint16_t unresolvedCount = 0;
-  for (int i = startTocIndex; i < tocCount; i++) {
-    const auto entry = epub->getTocItem(i);
-    if (entry.spineIndex != spineIndex) break;
-    totalEntries++;
-    if (!entry.anchor.empty()) unresolvedCount++;
-  }
-
-  // If no TOC entries have anchors, all chapters start at page 0 and
-  // getTocIndexForPage falls back to epub->getTocIndexForSpineIndex,
-  // so there's nothing to resolve and no value in storing boundaries.
-  if (totalEntries == 0 || unresolvedCount == 0) return;
-
-  tocBoundaries.reserve(totalEntries);
-  for (int i = startTocIndex; i < startTocIndex + totalEntries; i++) {
-    const auto entry = epub->getTocItem(i);
-    uint16_t page = 0;
-    if (!entry.anchor.empty()) {
-      for (const auto& [key, val] : anchors) {
-        if (key == entry.anchor) {
-          page = val;
-          break;
-        }
-      }
-    }
-    tocBoundaries.push_back({i, page});
-  }
-
-  // Defensive sort in case TOC entries are out of document order in a malformed epub
-  std::sort(tocBoundaries.begin(), tocBoundaries.end(),
-            [](const TocBoundary& a, const TocBoundary& b) { return a.startPage < b.startPage; });
-}
-
 // Resolve TOC anchor-to-page mappings by scanning the section cache's on-disk anchor data.
-// Called from loadSectionFile when anchors are not in memory. Caches the small set of
-// TOC anchor strings first (since getTocItem does file I/O to BookMetadataCache), then
-// streams through on-disk anchors matching only those, stopping as soon as all are found.
-// See buildTocBoundaries for the in-memory variant.
+// Caches the small set of TOC anchor strings first (since getTocItem does file I/O to
+// BookMetadataCache), then streams through on-disk anchors matching only those, stopping
+// as soon as all are found.
 void Section::buildTocBoundariesFromFile(FsFile& f) {
   const int startTocIndex = epub->getTocIndexForSpineIndex(spineIndex);
   if (startTocIndex < 0) return;
