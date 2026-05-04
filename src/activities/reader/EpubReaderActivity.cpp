@@ -1195,17 +1195,24 @@ void EpubReaderActivity::render(RenderLock&& lock) {
     return;
   }
 
+  const int spineCount = epub->getSpineItemsCount();
+  if (spineCount <= 0) {
+    LOG_ERR("ERS", "EPUB has no spine items, aborting render");
+    automaticPageTurnActive = false;
+    return;
+  }
+
   // edge case handling for sub-zero spine index
   if (currentSpineIndex < 0) {
     currentSpineIndex = 0;
   }
   // based bounds of book, show end of book screen
-  if (currentSpineIndex > epub->getSpineItemsCount()) {
-    currentSpineIndex = epub->getSpineItemsCount();
+  if (currentSpineIndex > spineCount) {
+    currentSpineIndex = spineCount;
   }
 
   // Show end of book screen
-  if (currentSpineIndex == epub->getSpineItemsCount()) {
+  if (currentSpineIndex == spineCount) {
     renderer.clearScreen();
     renderer.drawCenteredText(UI_12_FONT_ID, 300, tr(STR_END_OF_BOOK), true, EpdFontFamily::BOLD);
     renderer.displayBuffer();
@@ -1251,6 +1258,15 @@ void EpubReaderActivity::render(RenderLock&& lock) {
   lastRenderStats.largestFreeBlockBefore = heap_caps_get_largest_free_block(MALLOC_CAP_8BIT | MALLOC_CAP_DEFAULT);
 
   if (!section) {
+    if (currentSpineIndex < 0 || currentSpineIndex >= spineCount) {
+      LOG_ERR("ERS", "Render rejected invalid spine index %d (valid 0..%d)", currentSpineIndex, spineCount - 1);
+      currentSpineIndex = 0;
+      nextPageNumber = 0;
+      automaticPageTurnActive = false;
+      requestUpdate();
+      return;
+    }
+
     const bool embeddedStyle = lastRenderStats.embeddedStyle;
     const uint8_t imageRendering = lastRenderStats.imageRendering;
     const auto filepath = epub->getSpineItem(currentSpineIndex).href;
@@ -1987,6 +2003,16 @@ void EpubReaderActivity::onButtonAction(const CrossPointSettings::BUTTON_ACTION 
       if (epub) {
         applyBookReaderOverrides(bookEmbeddedStyleOverride, bookImageRenderingOverride, bookFontFamilyOverride,
                                  bookSdFontFamilyOverride, bookFontSizeOverride, !bookBionicReadingOverride);
+        requestUpdate();
+      }
+      break;
+    case BA::BTN_CYCLE_FONT_SIZE:
+      if (epub) {
+        const uint8_t current =
+            (bookFontSizeOverride >= 0) ? static_cast<uint8_t>(bookFontSizeOverride) : SETTINGS.fontSize;
+        const int8_t next = static_cast<int8_t>((current + 1) % CrossPointSettings::FONT_SIZE_COUNT);
+        applyBookReaderOverrides(bookEmbeddedStyleOverride, bookImageRenderingOverride, bookFontFamilyOverride,
+                                 bookSdFontFamilyOverride, next, bookBionicReadingOverride);
         requestUpdate();
       }
       break;
