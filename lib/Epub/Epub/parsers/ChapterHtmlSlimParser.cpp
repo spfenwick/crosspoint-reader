@@ -34,7 +34,27 @@ constexpr size_t PARSE_BUFFER_SIZE = 1024;
 constexpr size_t IMAGE_EXTRACT_CHUNK_SIZE = 1024;
 constexpr size_t MIN_FREE_HEAP_FOR_IMAGE_EXTRACT = 48 * 1024;
 constexpr size_t MIN_MAX_ALLOC_FOR_IMAGE_EXTRACT = 36 * 1024;
-constexpr uint32_t MIN_FREE_HEAP_FOR_INDEXING = 40 * 1024;
+
+// Minimum total free heap checked between 1KB parse chunks.
+// Set low enough that normal indexing can run for hundreds of pages; the
+// contiguous-block guard below is the precise defence against vector realloc crashes.
+constexpr uint32_t MIN_FREE_HEAP_FOR_INDEXING = 8 * 1024;
+
+// CSS style cache caps. Each entry is ~140 bytes of individually heap-allocated
+// unordered_map nodes, staying live throughout indexing and fragmenting the heap.
+// Observed at page 511: 160+ unique CSS class combinations = ~22 KB of scattered nodes.
+// Once the cap is reached, we fall through to direct (uncached) resolution — same result,
+// negligible extra CPU, significant reduction in live fragmentation.
+constexpr size_t MAX_CSS_CACHE_ENTRIES        = 64;
+constexpr size_t MAX_INLINE_STYLE_CACHE_ENTRIES = 32;
+
+// Minimum largest contiguous free block (heap_caps_get_largest_free_block) required
+// before calling layoutAndExtractLines(). That call triggers a font prewarm (uses
+// std::nothrow — safe) and small layout vectors (a few hundred bytes each). The former
+// 16 KB value was calibrated for paragraphLutPerPage vector doubling (~12 KB), which is
+// now eliminated by the side-file approach. 8 KB gives comfortable headroom for the
+// remaining allocations (largest: Page::elements doubling at ~512 bytes).
+constexpr uint32_t MIN_CONTIGUOUS_HEAP_FOR_LAYOUT = 8 * 1024;
 
 const char* BLOCK_TAGS[] = {"p", "li", "div", "br", "blockquote", "pre"};
 constexpr int NUM_BLOCK_TAGS = sizeof(BLOCK_TAGS) / sizeof(BLOCK_TAGS[0]);
@@ -168,6 +188,7 @@ void ChapterHtmlSlimParser::updateEffectiveInlineStyle() {
 
 // flush the contents of partWordBuffer to currentTextBlock
 void ChapterHtmlSlimParser::flushPartWordBuffer() {
+  if (streamFailed) return;  // already aborting; Expat may still dispatch a few callbacks before honouring XML_StopParser
   // Determine font style from depth-based tracking and CSS effective style
   const bool isBold = boldUntilDepth < depth || effectiveBold;
   const bool isItalic = italicUntilDepth < depth || effectiveItalic;
@@ -196,6 +217,14 @@ void ChapterHtmlSlimParser::flushPartWordBuffer() {
   nextWordContinues = false;
 
   if (currentTextBlock->size() > 96) {
+    if (heap_caps_get_largest_free_block(MALLOC_CAP_8BIT) < MIN_CONTIGUOUS_HEAP_FOR_LAYOUT) {
+      LOG_ERR("EHP", "Low contiguous heap (%u bytes) before layout, aborting",
+              heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+      streamFailed = true;
+      oomDetected_ = true;
+      XML_StopParser(activeParser, XML_FALSE);
+      return;
+    }
     LOG_DBG("EHP", "Text block too long, splitting into multiple pages");
     const int horizontalInset = currentTextBlock->getBlockStyle().totalHorizontalInset();
     const uint16_t effectiveWidth =
@@ -210,11 +239,11 @@ void ChapterHtmlSlimParser::flushPartWordBuffer() {
   }
 }
 
-// Emit the current page, keeping paragraphLutPerPage and completedPageCount in lockstep.
-// Callers must ensure currentPage is non-null and carries content; the helper resets
-// currentPage to a fresh Page and zeroes currentPageNextY so the caller can keep building.
+// Emit the current page. Callers must ensure currentPage is non-null and carries content;
+// the helper resets currentPage to a fresh Page and zeroes currentPageNextY so the caller
+// can keep building.
 void ChapterHtmlSlimParser::emitPage(uint32_t xhtmlByteOffset) {
-  paragraphLutPerPage.push_back({xhtmlByteOffset, xpathParagraphIndex});
+  if (onParagraphLutFn) onParagraphLutFn(xhtmlByteOffset, xpathParagraphIndex);
   completePageFn(std::move(currentPage));
   completedPageCount++;
   auto* newPage = new (std::nothrow) Page();
@@ -337,17 +366,24 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
         cssStyle = it->second;
       } else {
         CssStyle resolved = self->cssParser->resolveStyle(name, classAttr);
-        if (resolved.defined.anySet())
-          cssStyle = self->cssStyleCache_.emplace(cacheKey, resolved).first->second;
-        else
+        if (resolved.defined.anySet()) {
+          if (self->cssStyleCache_.size() < MAX_CSS_CACHE_ENTRIES)
+            cssStyle = self->cssStyleCache_.emplace(cacheKey, resolved).first->second;
+          else
+            cssStyle = resolved;  // cache full: use directly, same result
+        } else {
           cssStyle = resolved;  // transient fallback: skip cache so future calls can re-resolve
+        }
       }
     }
     if (!styleAttr.empty()) {
       auto it = self->inlineStyleCache_.find(styleAttr);
-      if (it == self->inlineStyleCache_.end())
+      if (it == self->inlineStyleCache_.end() && self->inlineStyleCache_.size() < MAX_INLINE_STYLE_CACHE_ENTRIES)
         it = self->inlineStyleCache_.emplace(styleAttr, CssParser::parseInlineStyle(styleAttr)).first;
-      cssStyle.applyOver(it->second);
+      if (it != self->inlineStyleCache_.end())
+        cssStyle.applyOver(it->second);
+      else
+        cssStyle.applyOver(CssParser::parseInlineStyle(styleAttr));
     }
   }
 
@@ -457,14 +493,19 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
         std::string imgCacheKey("img|");
         imgCacheKey += classAttr;
         auto imgIt = self->cssStyleCache_.find(imgCacheKey);
-        if (imgIt == self->cssStyleCache_.end())
+        if (imgIt == self->cssStyleCache_.end() && self->cssStyleCache_.size() < MAX_CSS_CACHE_ENTRIES)
           imgIt = self->cssStyleCache_.emplace(imgCacheKey, self->cssParser->resolveStyle("img", classAttr)).first;
-        CssStyle imgDisplayStyle = imgIt->second;
+        CssStyle imgDisplayStyle = (imgIt != self->cssStyleCache_.end())
+                                       ? imgIt->second
+                                       : self->cssParser->resolveStyle("img", classAttr);
         if (!styleAttr.empty()) {
           auto it = self->inlineStyleCache_.find(styleAttr);
-          if (it == self->inlineStyleCache_.end())
+          if (it == self->inlineStyleCache_.end() && self->inlineStyleCache_.size() < MAX_INLINE_STYLE_CACHE_ENTRIES)
             it = self->inlineStyleCache_.emplace(styleAttr, CssParser::parseInlineStyle(styleAttr)).first;
-          imgDisplayStyle.applyOver(it->second);
+          if (it != self->inlineStyleCache_.end())
+            imgDisplayStyle.applyOver(it->second);
+          else
+            imgDisplayStyle.applyOver(CssParser::parseInlineStyle(styleAttr));
         }
         if (imgDisplayStyle.hasDisplay() && imgDisplayStyle.display == CssDisplay::None) {
           // CSS-hidden images should behave like suppressed images for spacing.
@@ -586,16 +627,25 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
                 std::string imgCacheKey("img|");
                 imgCacheKey += classAttr;
                 auto imgStyleIt = self->cssParser ? self->cssStyleCache_.find(imgCacheKey) : self->cssStyleCache_.end();
-                if (self->cssParser && imgStyleIt == self->cssStyleCache_.end())
+                if (self->cssParser && imgStyleIt == self->cssStyleCache_.end() &&
+                    self->cssStyleCache_.size() < MAX_CSS_CACHE_ENTRIES)
                   imgStyleIt =
                       self->cssStyleCache_.emplace(imgCacheKey, self->cssParser->resolveStyle("img", classAttr)).first;
-                CssStyle imgStyle = self->cssParser ? imgStyleIt->second : CssStyle{};
+                CssStyle imgStyle = self->cssParser
+                                        ? ((imgStyleIt != self->cssStyleCache_.end())
+                                               ? imgStyleIt->second
+                                               : self->cssParser->resolveStyle("img", classAttr))
+                                        : CssStyle{};
                 // Merge inline style (e.g. style="height: 2em") so it overrides stylesheet rules
                 if (!styleAttr.empty()) {
                   auto it = self->inlineStyleCache_.find(styleAttr);
-                  if (it == self->inlineStyleCache_.end())
+                  if (it == self->inlineStyleCache_.end() &&
+                      self->inlineStyleCache_.size() < MAX_INLINE_STYLE_CACHE_ENTRIES)
                     it = self->inlineStyleCache_.emplace(styleAttr, CssParser::parseInlineStyle(styleAttr)).first;
-                  imgStyle.applyOver(it->second);
+                  if (it != self->inlineStyleCache_.end())
+                    imgStyle.applyOver(it->second);
+                  else
+                    imgStyle.applyOver(CssParser::parseInlineStyle(styleAttr));
                 }
                 const bool hasCssHeight = imgStyle.hasImageHeight();
                 const bool hasCssWidth = imgStyle.hasImageWidth();
@@ -1478,6 +1528,10 @@ ChapterHtmlSlimParser::~ChapterHtmlSlimParser() {
 }
 
 bool ChapterHtmlSlimParser::setup(const size_t totalInflatedSize) {
+  LOG_DBG("EHP", "Indexing start: freeHeap=%u largestBlock=%u thresholds: total=%u contiguous=%u",
+          ESP.getFreeHeap(), heap_caps_get_largest_free_block(MALLOC_CAP_8BIT),
+          static_cast<unsigned>(MIN_FREE_HEAP_FOR_INDEXING),
+          static_cast<unsigned>(MIN_CONTIGUOUS_HEAP_FOR_LAYOUT));
   auto paragraphAlignmentBlockStyle = BlockStyle();
   paragraphAlignmentBlockStyle.textAlignDefined = true;
   // Resolve None sentinel to Justify for initial block (no CSS context yet)
@@ -1534,7 +1588,8 @@ size_t ChapterHtmlSlimParser::write(const uint8_t* buffer, const size_t size) {
   const uint8_t* cursor = buffer;
   while (remaining > 0) {
     if (ESP.getFreeHeap() < MIN_FREE_HEAP_FOR_INDEXING) {
-      LOG_ERR("EHP", "Low heap (%u bytes) during indexing, aborting parse", ESP.getFreeHeap());
+      LOG_ERR("EHP", "Low heap: freeHeap=%u largestBlock=%u completedPages=%d",
+              ESP.getFreeHeap(), heap_caps_get_largest_free_block(MALLOC_CAP_8BIT), completedPageCount);
       streamFailed = true;
       oomDetected_ = true;
       return 0;
@@ -1552,6 +1607,10 @@ size_t ChapterHtmlSlimParser::write(const uint8_t* buffer, const size_t size) {
     // The streaming source doesn't know "this was the last chunk" — pass isFinal=false
     // here and let finalize() emit the terminating empty parse with isFinal=true.
     if (XML_ParseBuffer(activeParser, static_cast<int>(chunk), 0) == XML_STATUS_ERROR) {
+      if (oomDetected_) {
+        // XML_StopParser was called from an OOM guard — not a real parse error, just break.
+        break;
+      }
       LOG_ERR("EHP", "Parse error at line %lu:\n%s", XML_GetCurrentLineNumber(activeParser),
               XML_ErrorString(XML_GetErrorCode(activeParser)));
       streamFailed = true;
@@ -1708,6 +1767,15 @@ void ChapterHtmlSlimParser::makePages() {
   const int horizontalInset = blockStyle.totalHorizontalInset();
   const uint16_t effectiveWidth =
       (horizontalInset < viewportWidth) ? static_cast<uint16_t>(viewportWidth - horizontalInset) : viewportWidth;
+
+  if (heap_caps_get_largest_free_block(MALLOC_CAP_8BIT) < MIN_CONTIGUOUS_HEAP_FOR_LAYOUT) {
+    LOG_ERR("EHP", "Low contiguous heap (%u bytes) before makePages layout, aborting",
+            heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+    streamFailed = true;
+    oomDetected_ = true;
+    XML_StopParser(activeParser, XML_FALSE);
+    return;
+  }
 
   currentTextBlock->layoutAndExtractLines(
       renderer, fontId, effectiveWidth,

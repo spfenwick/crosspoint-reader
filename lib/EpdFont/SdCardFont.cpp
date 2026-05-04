@@ -1216,8 +1216,6 @@ int SdCardFont::prewarmStyle(uint8_t styleIdx, const uint32_t* codepoints, uint3
 
   s.epdFont.data = &s.miniData;
   s.miniMode = metadataOnly ? PerStyle::MiniMode::METADATA : PerStyle::MiniMode::FULL;
-  LOG_DBG("SDCF", "prewarmStyle %u: mode→%s glyphs=%u bitmap=%p", styleIdx, metadataOnly ? "METADATA" : "FULL",
-          validCount, s.miniBitmap);
 
   // Accumulate stats
   stats_.sdReadTimeMs += sdTime;
@@ -1280,10 +1278,6 @@ const EpdGlyph* SdCardFont::onGlyphMiss(void* ctx, uint32_t codepoint) {
   if (!self->loaded_ || styleIdx >= MAX_STYLES || !self->styles_[styleIdx].present) return nullptr;
   const auto& s = self->styles_[styleIdx];
   if (!s.fullIntervals) return nullptr;
-
-  // Diagnostic: log first miss per codepoint+style to show why it bypassed prewarm
-  LOG_DBG("SDCF", "onGlyphMiss: U+%04X style %u miniMode=%u miniIntervals=%u bitmap=%p", codepoint, styleIdx,
-          (uint8_t)s.miniMode, s.miniIntervalCount, s.miniBitmap);
 
   // Check overflow cache first (matching both codepoint and style)
   for (uint32_t i = 0; i < self->overflowCount_; i++) {

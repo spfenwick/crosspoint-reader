@@ -397,28 +397,57 @@ bool Section::createSectionFile(const int fontId, const float lineCompression, c
     }
   }
 
-  // Open a side file to stream anchor data during parsing, avoiding in-memory accumulation.
-  // Anchors (id → page) are written here as they are committed, then copied into the section
-  // file after all page data has been written. Eliminates ~48 bytes of heap per anchor for
-  // chapters with long id strings (e.g. "introduction-endnote-42-text").
+  // Three side files stream per-page data during parsing, avoiding in-memory vectors that
+  // double in size at power-of-two page counts and cause contiguous-allocation crashes:
+  //   .lut   — one uint32_t file offset per page  (was std::vector<uint32_t> lut)
+  //   .para  — one {u32 byteOffset, u16 paraIdx} per page  (was paragraphLutPerPage vector)
+  //   .tmp   — anchor entries  (already streamed; kept unchanged)
+  const std::string lutSidePath  = filePath + ".lut";
+  const std::string paraSidePath = filePath + ".para";
   const std::string anchorSidePath = filePath + ".tmp";
-  FsFile anchorSideFile;
+  FsFile lutSideFile, paraSideFile, anchorSideFile;
+  uint16_t lutCount = 0;
+  uint16_t paraLutCount = 0;
   uint16_t anchorCount = 0;
-  if (!Storage.openFileForWrite("SCT", anchorSidePath, anchorSideFile)) {
-    LOG_ERR("SCT", "Failed to open anchor side file");
+  bool hasFailedLutRecords = false;
+
+  auto cleanupSideFiles = [&]() {
+    lutSideFile.close();   Storage.remove(lutSidePath.c_str());
+    paraSideFile.close();  Storage.remove(paraSidePath.c_str());
+    anchorSideFile.close(); Storage.remove(anchorSidePath.c_str());
+  };
+
+  if (!Storage.openFileForWrite("SCT", lutSidePath, lutSideFile) ||
+      !Storage.openFileForWrite("SCT", paraSidePath, paraSideFile) ||
+      !Storage.openFileForWrite("SCT", anchorSidePath, anchorSideFile)) {
+    LOG_ERR("SCT", "Failed to open side file(s)");
     file.close();
     Storage.remove(filePath.c_str());
+    cleanupSideFiles();
     return false;
   }
 
   ChapterHtmlSlimParser visitor(
       epub, renderer, fontId, lineCompression, extraParagraphSpacing, paragraphAlignment, viewportWidth, viewportHeight,
       hyphenationEnabled, bionicReadingEnabled,
-      [this, &lut](std::unique_ptr<Page> page) { lut.emplace_back(this->onPageComplete(std::move(page))); },
+      [this, &lutSideFile, &lutCount, &hasFailedLutRecords](std::unique_ptr<Page> page) {
+        const uint32_t pos = this->onPageComplete(std::move(page));
+        if (pos == 0) hasFailedLutRecords = true;
+        serialization::writePod(lutSideFile, pos);
+        lutCount++;
+      },
       [&anchorSideFile, &anchorCount](const std::string& id, uint16_t page) {
         serialization::writeString(anchorSideFile, id);
         serialization::writePod(anchorSideFile, page);
         anchorCount++;
+      },
+      [&paraSideFile, &paraLutCount](uint32_t xhtmlByteOffset, uint16_t paragraphIndex) {
+        // Write both fields in one call (one mutex acquire) rather than two separate writePod calls.
+        uint8_t buf[sizeof(uint32_t) + sizeof(uint16_t)];
+        memcpy(buf, &xhtmlByteOffset, sizeof(uint32_t));
+        memcpy(buf + sizeof(uint32_t), &paragraphIndex, sizeof(uint16_t));
+        paraSideFile.write(buf, sizeof(buf));
+        paraLutCount++;
       },
       embeddedStyle, contentBase, imageBasePath, imageRendering, std::move(tocAnchors), progressFn, cssParser);
   Hyphenator::setPreferredLanguage(epub->getLanguage());
@@ -448,41 +477,43 @@ bool Section::createSectionFile(const int fontId, const float lineCompression, c
 
   const uint32_t phaseFinalizeStart = millis();
   if (!success) {
-    const bool canSavePartial = visitor.hadOom() && !lut.empty();
+    const bool canSavePartial = visitor.hadOom() && lutCount > 0;
     if (!canSavePartial) {
       LOG_ERR("SCT", "Failed to parse XML and build pages (stream=%d finalize=%d)", streamOk ? 1 : 0,
               finalizeOk ? 1 : 0);
       file.close();
       Storage.remove(filePath.c_str());
-      anchorSideFile.close();
-      Storage.remove(anchorSidePath.c_str());
+      cleanupSideFiles();
       if (cssParser) {
         cssParser->clear();
       }
       return false;
     }
     LOG_ERR("SCT", "Indexing stopped early (low heap) after %u pages; saving partial section file",
-            static_cast<uint32_t>(lut.size()));
+            static_cast<uint32_t>(lutCount));
   }
   const uint32_t fileSize = static_cast<uint32_t>(inflatedSize);
 
+  // Write page LUT: copy from side file. hasFailedLutRecords was set during parsing
+  // if onPageComplete returned 0 for any page (serialization error).
   const uint32_t lutOffset = file.position();
-  bool hasFailedLutRecords = false;
-  // Write LUT
-  for (const uint32_t& pos : lut) {
-    if (pos == 0) {
-      hasFailedLutRecords = true;
-      break;
+  lutSideFile.seek(0);
+  {
+    uint8_t copyBuf[64];
+    size_t n;
+    while ((n = lutSideFile.read(copyBuf, sizeof(copyBuf))) > 0) {
+      file.write(copyBuf, n);
     }
-    serialization::writePod(file, pos);
   }
+  lutSideFile.close();
+  Storage.remove(lutSidePath.c_str());
 
   if (hasFailedLutRecords) {
     LOG_ERR("SCT", "Failed to write LUT due to invalid page positions");
     file.close();
     Storage.remove(filePath.c_str());
-    anchorSideFile.close();
-    Storage.remove(anchorSidePath.c_str());
+    paraSideFile.close();  Storage.remove(paraSidePath.c_str());
+    anchorSideFile.close(); Storage.remove(anchorSidePath.c_str());
     return false;
   }
 
@@ -505,19 +536,25 @@ bool Section::createSectionFile(const int fontId, const float lineCompression, c
   // The byte offset lets findXPathForParagraph seek near the target paragraph without scanning
   // from the beginning of the XHTML file, reducing SD reads on large chapters.
   const uint32_t paragraphLutOffset = file.position();
-  const auto& paragraphLut = visitor.getParagraphLutPerPage();
-  if (paragraphLut.size() != static_cast<size_t>(pageCount)) {
-    LOG_ERR("SCT", "Paragraph LUT size mismatch: lut=%u pageCount=%u", static_cast<uint32_t>(paragraphLut.size()),
-            static_cast<uint32_t>(pageCount));
+  if (paraLutCount != pageCount) {
+    LOG_ERR("SCT", "Paragraph LUT size mismatch: paraLut=%u pageCount=%u",
+            static_cast<uint32_t>(paraLutCount), static_cast<uint32_t>(pageCount));
     file.close();
     Storage.remove(filePath.c_str());
+    paraSideFile.close();  Storage.remove(paraSidePath.c_str());
     return false;
   }
-  serialization::writePod(file, static_cast<uint16_t>(paragraphLut.size()));
-  for (const auto& entry : paragraphLut) {
-    serialization::writePod(file, entry.xhtmlByteOffset);
-    serialization::writePod(file, entry.paragraphIndex);
+  serialization::writePod(file, paraLutCount);
+  paraSideFile.seek(0);
+  {
+    uint8_t copyBuf[64];
+    size_t n;
+    while ((n = paraSideFile.read(copyBuf, sizeof(copyBuf))) > 0) {
+      file.write(copyBuf, n);
+    }
   }
+  paraSideFile.close();
+  Storage.remove(paraSidePath.c_str());
 
   // Patch header with final pageCount, lutOffset, anchorMapOffset, and paragraphLutOffset
   file.seek(HEADER_SIZE - sizeof(uint32_t) * 3 - sizeof(pageCount));
@@ -541,12 +578,16 @@ bool Section::createSectionFile(const int fontId, const float lineCompression, c
 
   // Cache the LUT in memory and open the file for reading so that
   // subsequent loadPageFromSectionFile() calls can seek directly without re-opening.
+  // The LUT was streamed to a side file and is now in the section file at lutOffset;
+  // read it back rather than moving a vector.
   if (!Storage.openFileForRead("SCT", filePath, file)) {
     LOG_ERR("SCT", "Failed to open section file for reading after creation");
     return false;
   }
   buildTocBoundariesFromFile(file);
-  this->lut = std::move(lut);
+  this->lut.resize(pageCount);
+  file.seek(lutOffset);
+  for (auto& pos : this->lut) serialization::readPod(file, pos);
   const uint32_t finalizeMs = millis() - phaseFinalizeStart;
   const uint32_t totalMs = millis() - phaseTotalStart;
   LOG_DBG("SCT", "createSectionFile spine=%d total=%ums (stream=%u setup=%u parse=%u finalize=%u) pages=%u bytes=%u",
