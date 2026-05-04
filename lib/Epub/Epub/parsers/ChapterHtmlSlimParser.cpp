@@ -764,7 +764,9 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
     return;
   }
 
-  // Skip blocks with role="doc-pagebreak" and epub:type="pagebreak"
+  // removed skipping of doc-pagebreak and epub:type="pagebreak"
+  // as publishers sometimes wrap actual content in these tags
+  /*
   if (atts != nullptr) {
     for (int i = 0; atts[i]; i += 2) {
       if (strcmp(atts[i], "role") == 0 && strcmp(atts[i + 1], "doc-pagebreak") == 0 ||
@@ -775,6 +777,7 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
       }
     }
   }
+  */
 
   // Detect internal <a href="..."> links (footnotes, cross-references)
   // Note: <aside epub:type="footnote"> elements are rendered as normal content

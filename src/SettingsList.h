@@ -140,13 +140,14 @@ inline const std::vector<SettingInfo> list = {
 // All entries share the same ordered action-label list; the submenu groups them behind
 // a single placeholder row in the device UI.
 // Shared action options (everything except the first "default" entry).
-#define BTN_ACT_OPTIONS                                                                                     \
-  StrId::STR_BTN_ACT_PAGE_FORWARD, StrId::STR_BTN_ACT_PAGE_BACK, StrId::STR_BTN_ACT_PAGE_FORWARD_10,        \
-      StrId::STR_BTN_ACT_PAGE_BACK_10, StrId::STR_BTN_ACT_GO_HOME, StrId::STR_BTN_ACT_SLEEP,                \
-      StrId::STR_BTN_ACT_FORCE_REFRESH, StrId::STR_BTN_ACT_FORCE_FAST_REFRESH, StrId::STR_BTN_ACT_OPEN_TOC, \
-      StrId::STR_BTN_ACT_OPEN_BOOKMARKS, StrId::STR_BTN_ACT_STAR_PAGE, StrId::STR_BTN_ACT_FOOTNOTES,        \
-      StrId::STR_BTN_ACT_NEXT_SECTION, StrId::STR_BTN_ACT_PREV_SECTION, StrId::STR_BTN_ACT_EXIT_READER,     \
-      StrId::STR_BTN_ACT_READER_MENU, StrId::STR_BTN_ACT_TOGGLE_BIONIC_READING, StrId::STR_BTN_ACT_KOREADER_SYNC
+#define BTN_ACT_OPTIONS                                                                                           \
+  StrId::STR_BTN_ACT_PAGE_FORWARD, StrId::STR_BTN_ACT_PAGE_BACK, StrId::STR_BTN_ACT_PAGE_FORWARD_10,              \
+      StrId::STR_BTN_ACT_PAGE_BACK_10, StrId::STR_BTN_ACT_GO_HOME, StrId::STR_BTN_ACT_SLEEP,                      \
+      StrId::STR_BTN_ACT_FORCE_REFRESH, StrId::STR_BTN_ACT_FORCE_FAST_REFRESH, StrId::STR_BTN_ACT_OPEN_TOC,       \
+      StrId::STR_BTN_ACT_OPEN_BOOKMARKS, StrId::STR_BTN_ACT_STAR_PAGE, StrId::STR_BTN_ACT_FOOTNOTES,              \
+      StrId::STR_BTN_ACT_NEXT_SECTION, StrId::STR_BTN_ACT_PREV_SECTION, StrId::STR_BTN_ACT_EXIT_READER,           \
+      StrId::STR_BTN_ACT_READER_MENU, StrId::STR_BTN_ACT_TOGGLE_BIONIC_READING, StrId::STR_BTN_ACT_KOREADER_SYNC, \
+      StrId::STR_BTN_ACT_CYCLE_FONT_SIZE
 
     // Back button: short=exit reader, double=ignore, long=go home
     SettingInfo::Enum(StrId::STR_BTN_SHORT_PRESS, &CrossPointSettings::btnShortBack, {StrId::STR_BTN_DEF_EXIT_READER},
@@ -192,24 +193,24 @@ inline const std::vector<SettingInfo> list = {
     // Page Back button: short=previous page, double=ignore, long=chapter back
     SettingInfo::Enum(StrId::STR_BTN_SHORT_PRESS, &CrossPointSettings::btnShortPageBack,
                       {StrId::STR_BTN_DEF_PREV_PAGE, BTN_ACT_OPTIONS}, "btnShortPageBack", StrId::STR_CAT_CONTROLS)
-        .withSubmenu(StrId::STR_BTN_PAGE_BACK),
+        .withSubmenu(StrId::STR_BTN_UP),
     SettingInfo::Enum(StrId::STR_BTN_DOUBLE_PRESS, &CrossPointSettings::btnDoublePageBack,
                       {StrId::STR_BTN_DEF_IGNORE, BTN_ACT_OPTIONS}, "btnDoublePageBack", StrId::STR_CAT_CONTROLS)
-        .withSubmenu(StrId::STR_BTN_PAGE_BACK),
+        .withSubmenu(StrId::STR_BTN_UP),
     SettingInfo::Enum(StrId::STR_BTN_LONG_PRESS, &CrossPointSettings::btnLongPageBack,
                       {StrId::STR_BTN_DEF_CHAPTER_BACK, BTN_ACT_OPTIONS}, "btnLongPageBack", StrId::STR_CAT_CONTROLS)
-        .withSubmenu(StrId::STR_BTN_PAGE_BACK),
+        .withSubmenu(StrId::STR_BTN_UP),
     // Page Forward button: short=next page, double=ignore, long=chapter forward
     SettingInfo::Enum(StrId::STR_BTN_SHORT_PRESS, &CrossPointSettings::btnShortPageForward,
                       {StrId::STR_BTN_DEF_NEXT_PAGE, BTN_ACT_OPTIONS}, "btnShortPageForward", StrId::STR_CAT_CONTROLS)
-        .withSubmenu(StrId::STR_BTN_PAGE_FORWARD),
+        .withSubmenu(StrId::STR_BTN_DOWN),
     SettingInfo::Enum(StrId::STR_BTN_DOUBLE_PRESS, &CrossPointSettings::btnDoublePageForward,
                       {StrId::STR_BTN_DEF_IGNORE, BTN_ACT_OPTIONS}, "btnDoublePageForward", StrId::STR_CAT_CONTROLS)
-        .withSubmenu(StrId::STR_BTN_PAGE_FORWARD),
+        .withSubmenu(StrId::STR_BTN_DOWN),
     SettingInfo::Enum(StrId::STR_BTN_LONG_PRESS, &CrossPointSettings::btnLongPageForward,
                       {StrId::STR_BTN_DEF_CHAPTER_FORWARD, BTN_ACT_OPTIONS}, "btnLongPageForward",
                       StrId::STR_CAT_CONTROLS)
-        .withSubmenu(StrId::STR_BTN_PAGE_FORWARD),
+        .withSubmenu(StrId::STR_BTN_DOWN),
     // Power button: short=ignore, double=ignore, long=sleep (via hold timer, not event system)
     SettingInfo::Enum(StrId::STR_BTN_SHORT_PRESS, &CrossPointSettings::btnShortPower,
                       {StrId::STR_BTN_DEF_IGNORE, BTN_ACT_OPTIONS}, "btnShortPower", StrId::STR_CAT_CONTROLS)
