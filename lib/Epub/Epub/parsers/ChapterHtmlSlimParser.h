@@ -106,7 +106,7 @@ class ChapterHtmlSlimParser final : public Print {
     uint32_t xhtmlByteOffset;  // byte offset of most recent body-child element start at page break
     uint16_t paragraphIndex;   // 1-based <p> index at page completion
   };
-  std::vector<ParagraphLutEntry> paragraphLutPerPage;  // deep LUT: one entry per page
+  std::function<void(uint32_t, uint16_t)> onParagraphLutFn;  // streamed to side file; replaces in-memory vector
 
   // Active parser handle during streaming, nullptr otherwise.
   // Stored as a member so page-break sites (addLineToPage, image breaks) can call
@@ -140,9 +140,8 @@ class ChapterHtmlSlimParser final : public Print {
   void startNewTextBlock(const BlockStyle& blockStyle);
   void flushPartWordBuffer();
   void makePages();
-  // Emit currentPage to the consumer while keeping paragraphLutPerPage and completedPageCount
-  // in lockstep. Every page break MUST go through this helper; open-coded completePageFn
-  // calls risk desynchronising paragraphLutPerPage and failing the size check in Section.cpp.
+  // Emit currentPage to the consumer. Every page break MUST go through this helper so that
+  // completedPageCount and the paragraph LUT side file stay in sync with the page LUT.
   void emitPage(uint32_t xhtmlByteOffset);
   // XML callbacks
   static void XMLCALL startElement(void* userData, const XML_Char* name, const XML_Char** atts);
@@ -156,7 +155,8 @@ class ChapterHtmlSlimParser final : public Print {
       const bool extraParagraphSpacing, const uint8_t paragraphAlignment, const uint16_t viewportWidth,
       const uint16_t viewportHeight, const bool hyphenationEnabled, const bool bionicReadingEnabled,
       const std::function<void(std::unique_ptr<Page>)>& completePageFn,
-      const std::function<void(const std::string&, uint16_t)>& onAnchorFn, const bool embeddedStyle,
+      const std::function<void(const std::string&, uint16_t)>& onAnchorFn,
+      const std::function<void(uint32_t, uint16_t)>& onParagraphLutFn, const bool embeddedStyle,
       const std::string& contentBase, const std::string& imageBasePath, const uint8_t imageRendering = 0,
       std::vector<std::string> tocAnchors = {}, const std::function<void(int)>& progressFn = nullptr,
       const CssParser* cssParser = nullptr)
@@ -173,6 +173,7 @@ class ChapterHtmlSlimParser final : public Print {
         bionicReadingEnabled(bionicReadingEnabled),
         completePageFn(completePageFn),
         onAnchorFn(onAnchorFn),
+        onParagraphLutFn(onParagraphLutFn),
         progressFn(progressFn),
         cssParser(cssParser),
         embeddedStyle(embeddedStyle),
@@ -200,5 +201,4 @@ class ChapterHtmlSlimParser final : public Print {
 
   ParsedText::LineProcessResult addLineToPage(std::shared_ptr<TextBlock> line, bool lineEndsWithHyphenatedWord,
                                               bool suppressHyphenationRetry);
-  const std::vector<ParagraphLutEntry>& getParagraphLutPerPage() const { return paragraphLutPerPage; }
 };
