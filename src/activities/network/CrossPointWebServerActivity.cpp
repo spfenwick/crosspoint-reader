@@ -43,6 +43,7 @@ void CrossPointWebServerActivity::onEnter() {
   state = WebServerActivityState::MODE_SELECTION;
   networkMode = NetworkMode::JOIN_NETWORK;
   isApMode = false;
+  webServerStarted = false;
   connectedIP.clear();
   connectedSSID.clear();
   lastHandleClientTime = 0;
@@ -97,6 +98,12 @@ void CrossPointWebServerActivity::onExit() {
 
   LOG_DBG("WEBACT", "Free heap at onExit end: %d bytes", ESP.getFreeHeap());
   requestUpdate();
+
+  if (webServerStarted) {
+    GUI.drawPopup(renderer, tr(STR_RESTART_DEVICE));
+    LOG_DBG("WEBACT", "Restarting device after webserver exit to regain heap...");
+    ESP.restart();
+  }
 }
 
 void CrossPointWebServerActivity::onNetworkModeSelected(const NetworkMode mode) {
@@ -245,6 +252,7 @@ void CrossPointWebServerActivity::startWebServer() {
   webServer->begin();
 
   if (webServer->isRunning()) {
+    webServerStarted = true;
     state = WebServerActivityState::SERVER_RUNNING;
     if (!isApMode) {
       currentRssi = WiFi.RSSI();

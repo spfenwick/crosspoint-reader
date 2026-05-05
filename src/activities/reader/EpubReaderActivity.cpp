@@ -897,8 +897,8 @@ void EpubReaderActivity::applyPendingSyncSession() {
 
   int restoreSpineIndex = sync.spineIndex;
   int restorePage = sync.page;
-  pendingParagraphLookup = sync.hasParagraphIndex;
-  pendingParagraphIndex = sync.paragraphIndex;
+  pendingParagraphLookup = false;
+  pendingParagraphIndex = 0;
 
   if (restoreSpineIndex < 0 || restoreSpineIndex >= epub->getSpineItemsCount()) {
     LOG_ERR("ERS", "Invalid sync restore spine index %d, resetting to 0", restoreSpineIndex);
@@ -916,8 +916,7 @@ void EpubReaderActivity::applyPendingSyncSession() {
     LOG_DBG("ERS", "Applied synced remote position: spine=%d page=%d paragraph=%u hasParagraph=%s", restoreSpineIndex,
             restorePage, pendingParagraphIndex, pendingParagraphLookup ? "yes" : "no");
   } else {
-    LOG_DBG("ERS", "Restored local pre-sync position: spine=%d page=%d paragraph=%u hasParagraph=%s", restoreSpineIndex,
-            restorePage, pendingParagraphIndex, pendingParagraphLookup ? "yes" : "no");
+    LOG_DBG("ERS", "Restored local pre-sync position: spine=%d page=%d", restoreSpineIndex, restorePage);
   }
 
   // sync.totalPagesInSpine is the page count of the local spine at launch time.
@@ -2013,6 +2012,14 @@ void EpubReaderActivity::onButtonAction(const CrossPointSettings::BUTTON_ACTION 
         const int8_t next = static_cast<int8_t>((current + 1) % CrossPointSettings::FONT_SIZE_COUNT);
         applyBookReaderOverrides(bookEmbeddedStyleOverride, bookImageRenderingOverride, bookFontFamilyOverride,
                                  bookSdFontFamilyOverride, next, bookBionicReadingOverride);
+        requestUpdate();
+      }
+      break;
+    case BA::BTN_CYCLE_ORIENTATION:
+      if (epub) {
+        const uint8_t nextOrientation =
+            static_cast<uint8_t>((SETTINGS.orientation + 1) % CrossPointSettings::ORIENTATION_COUNT);
+        applyOrientation(nextOrientation);
         requestUpdate();
       }
       break;

@@ -147,6 +147,19 @@ const uint8_t* FontDecompressor::getBitmap(const EpdFontData* fontData, const Ep
     break;  // Found the right slot but glyph wasn't in it; don't check other slots
   }
 
+  // Check fallback LRU cache
+  for (uint8_t i = 0; i < FALLBACK_CACHE_SLOTS; i++) {
+    if (_fallbackCache[i].fontData == fontData && _fallbackCache[i].glyphIndex == glyphIndex) {
+      _fallbackCache[i].lastUsedTick = ++_fallbackTick;
+      stats.cacheHits++;
+      stats.fallbackCacheHits++;
+      stats.getBitmapTimeUs += micros() - tStart;
+      return _fallbackCache[i].buffer;
+    }
+  }
+
+  stats.fallbackCacheMisses++;
+
   // Fallback: glyph wasn't in the page buffer — decompress its group transiently.
   // This is the rare path (prewarm should cover all glyphs on a normal page).
   uint16_t groupIndex = getGroupIndex(fontData, glyphIndex);
@@ -181,11 +194,25 @@ const uint8_t* FontDecompressor::getBitmap(const EpdFontData* fontData, const Ep
   }
 
   uint32_t alignedOff = getAlignedOffset(fontData, groupIndex, glyphIndex);
-  compactSingleGlyph(&groupBuf[alignedOff], _hotGlyphBuf, glyph->width, glyph->height);
+
+  uint8_t lruIndex = 0;
+  uint32_t oldestTick = UINT32_MAX;
+  for (uint8_t i = 0; i < FALLBACK_CACHE_SLOTS; i++) {
+    if (_fallbackCache[i].lastUsedTick < oldestTick) {
+      oldestTick = _fallbackCache[i].lastUsedTick;
+      lruIndex = i;
+    }
+  }
+
+  compactSingleGlyph(&groupBuf[alignedOff], _fallbackCache[lruIndex].buffer, glyph->width, glyph->height);
   free(groupBuf);
 
+  _fallbackCache[lruIndex].fontData = fontData;
+  _fallbackCache[lruIndex].glyphIndex = glyphIndex;
+  _fallbackCache[lruIndex].lastUsedTick = ++_fallbackTick;
+
   stats.getBitmapTimeUs += micros() - tStart;
-  return _hotGlyphBuf;
+  return _fallbackCache[lruIndex].buffer;
 }
 
 // --- Prewarm: pre-decompress glyph bitmaps for a page of text ---
@@ -219,13 +246,6 @@ int32_t FontDecompressor::findGlyphIndex(const EpdFontData* fontData, uint32_t c
 int FontDecompressor::prewarmCache(const EpdFontData* fontData, const char* utf8Text) {
   if (!fontData || !fontData->groups || !utf8Text) return 0;
 
-  // Allocate the next available slot (caller must call freePageBuffer/clearCache to reset)
-  if (pageSlotCount >= MAX_PAGE_SLOTS) {
-    LOG_ERR("FDC", "All %u page buffer slots full, cannot prewarm fontData=%p", MAX_PAGE_SLOTS, (void*)fontData);
-    return -1;
-  }
-  PageSlot& slot = pageSlots[pageSlotCount];
-
   // Step 1: Collect unique glyph indices needed for this page
   uint32_t neededGlyphs[MAX_PAGE_GLYPHS];
   uint16_t glyphCount = 0;
@@ -239,7 +259,29 @@ int FontDecompressor::prewarmCache(const EpdFontData* fontData, const char* utf8
     int32_t glyphIdx = findGlyphIndex(fontData, cp);
     if (glyphIdx < 0) continue;
 
-    // Deduplicate
+    // Deduplicate against already prewarmed slots
+    bool alreadyCached = false;
+    for (uint8_t s = 0; s < pageSlotCount; s++) {
+      if (pageSlots[s].fontData != fontData || pageSlots[s].glyphCount == 0) continue;
+      int left = 0, right = pageSlots[s].glyphCount - 1;
+      while (left <= right) {
+        int mid = left + (right - left) / 2;
+        if (pageSlots[s].glyphs[mid].glyphIndex == static_cast<uint32_t>(glyphIdx)) {
+          if (pageSlots[s].glyphs[mid].bufferOffset != UINT32_MAX) {
+            alreadyCached = true;
+          }
+          break;
+        }
+        if (pageSlots[s].glyphs[mid].glyphIndex < static_cast<uint32_t>(glyphIdx))
+          left = mid + 1;
+        else
+          right = mid - 1;
+      }
+      if (alreadyCached) break;
+    }
+    if (alreadyCached) continue;
+
+    // Deduplicate within the current page pass
     bool found = false;
     for (uint16_t i = 0; i < glyphCount; i++) {
       if (neededGlyphs[i] == static_cast<uint32_t>(glyphIdx)) {
@@ -296,6 +338,13 @@ int FontDecompressor::prewarmCache(const EpdFontData* fontData, const char* utf8
   }
 
   if (glyphCount == 0) return 0;
+
+  // Allocate the next available slot
+  if (pageSlotCount >= MAX_PAGE_SLOTS) {
+    LOG_ERR("FDC", "All %u page buffer slots full, cannot prewarm fontData=%p", MAX_PAGE_SLOTS, (void*)fontData);
+    return -1;
+  }
+  PageSlot& slot = pageSlots[pageSlotCount];
 
   // Step 2: Compute total buffer size and collect unique groups
   uint32_t totalBytes = 0;
@@ -515,5 +564,12 @@ void FontDecompressor::logStats(const char* label) {
     LOG_DBG("FDC", "[%s] getBitmap: %lu calls, %luus total, %luus/call avg", label, stats.getBitmapCalls,
             stats.getBitmapTimeUs, stats.getBitmapTimeUs / stats.getBitmapCalls);
   }
+
+  uint32_t lruTotal = stats.fallbackCacheHits + stats.fallbackCacheMisses;
+  if (lruTotal > 0) {
+    LOG_DBG("FDC", "[%s] LRU Fallback: hits=%lu misses=%lu (%.1f%%)", label, stats.fallbackCacheHits,
+            stats.fallbackCacheMisses, 100.0f * stats.fallbackCacheHits / lruTotal);
+  }
+
   resetStats();
 }
