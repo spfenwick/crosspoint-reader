@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Remote Control - %%CROSSPOINT%%</title>
+  <style>
+    html { scrollbar-gutter: stable; }
+    :root {
+      --font-color: #333;
+      --bg: #f5f5f5;
+      --title-color: #2c3e50;
+      --card-bg: #FFF;
+      --label-color: #7f8c8d;
+      --border-color: #eee;
+      --accent-color: rgb(110, 154, 130);
+      --accent-hover-color: #5a8c73;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --font-color: #f5f5f5;
+        --bg: #333;
+        --title-color: #ecf0f1;
+        --card-bg: #444;
+        --label-color: #bdc3c7;
+        --border-color: #555;
+        color-scheme: dark;
+      }
+    }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, sans-serif;
+      max-width: 800px;
+      margin: 0 auto;
+      padding: 20px;
+      background-color: var(--bg);
+      color: var(--font-color);
+    }
+    h1 { color: var(--title-color); border-bottom: 2px solid var(--accent-color); padding-bottom: 10px; }
+    h2 { color: var(--title-color); margin-top: 0; }
+    .card { background: var(--card-bg); border-radius: 8px; padding: 20px; margin: 15px 0; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+    .nav-links { margin: 20px 0; display: flex; gap: 10px; flex-wrap: wrap; }
+    .nav-links a { padding: 10px 20px; color: var(--font-color); text-decoration: none; border-radius: 4px; }
+    .nav-links a.active { background-color: var(--accent-color); color: white; }
+    .nav-links a:not(.active):hover { background-color: var(--accent-hover-color); color: white; }
+    .status-row { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--border-color); }
+    .status-row:last-child { border-bottom: none; }
+    .status-label { color: var(--label-color); font-size: 0.9em; min-width: 120px; }
+    .status-value { font-weight: 500; word-break: break-all; }
+    .pending-badge { display: inline-block; background: var(--accent-color); color: white; border-radius: 4px; padding: 2px 8px; font-size: 0.8em; margin-left: 8px; }
+    input[type="text"] {
+      width: 100%;
+      box-sizing: border-box;
+      padding: 8px 10px;
+      border: 1px solid var(--border-color);
+      border-radius: 4px;
+      font-size: 0.95em;
+      background: var(--bg);
+      color: var(--font-color);
+      margin: 8px 0;
+    }
+    .file-list { list-style: none; padding: 0; margin: 0; max-height: 400px; overflow-y: auto; }
+    .file-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px 10px;
+      border-bottom: 1px solid var(--border-color);
+      cursor: pointer;
+      border-radius: 4px;
+      gap: 8px;
+    }
+    .file-item:last-child { border-bottom: none; }
+    .file-item:hover { background: rgba(110,154,130,0.1); }
+    .file-item.selected { background: rgba(110,154,130,0.2); }
+    .file-icon { font-size: 1.2em; flex-shrink: 0; }
+    .file-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .file-dir { font-size: 0.85em; color: var(--label-color); }
+    .breadcrumb { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; margin-bottom: 10px; font-size: 0.9em; }
+    .breadcrumb span { color: var(--label-color); }
+    .breadcrumb a { color: var(--accent-color); text-decoration: none; cursor: pointer; }
+    .breadcrumb a:hover { text-decoration: underline; }
+    .btn {
+      padding: 10px 20px;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 0.95em;
+      font-weight: 600;
+    }
+    .btn-primary { background: var(--accent-color); color: white; }
+    .btn-primary:hover { background: var(--accent-hover-color); }
+    .btn-primary:disabled { background: #aaa; cursor: not-allowed; }
+    .btn-secondary { background: var(--border-color); color: var(--font-color); }
+    .action-row { display: flex; gap: 10px; margin-top: 12px; align-items: center; flex-wrap: wrap; }
+    .selected-path { font-size: 0.85em; color: var(--label-color); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .msg { padding: 10px 14px; border-radius: 4px; margin: 10px 0; font-size: 0.9em; display: none; }
+    .msg.ok { background: rgba(110,154,130,0.2); color: var(--title-color); display: block; }
+    .msg.err { background: rgba(200,80,80,0.15); color: #c00; display: block; }
+    .loading { color: var(--label-color); font-style: italic; padding: 12px 0; }
+  </style>
+</head>
+<body>
+  <h1>%%CROSSPOINT%%</h1>
+  <div class="nav-links">
+    <a href="/">Home</a>
+    <a href="/files">Files</a>
+    <a href="/settings">Settings</a>
+    <a href="/fonts">Fonts</a>
+    <a href="/remote" class="active">Remote</a>
+  </div>
+
+  <div class="card">
+    <h2>Reader Status</h2>
+    <div id="status-content"><div class="loading">Loading…</div></div>
+  </div>
+
+  <div class="card">
+    <h2>Queue Book to Open</h2>
+    <p style="color:var(--label-color);font-size:0.9em;margin-top:0">
+      Select a book below. It will open automatically after you exit File Transfer mode.
+    </p>
+
+    <div class="breadcrumb" id="breadcrumb"></div>
+    <div id="file-msg" class="msg"></div>
+    <ul class="file-list" id="file-list"><li class="loading">Loading…</li></ul>
+
+    <div class="action-row">
+      <span class="selected-path" id="selected-label">No book selected</span>
+      <button class="btn btn-primary" id="open-btn" disabled onclick="queueOpen()">Open on Device</button>
+    </div>
+    <div id="open-msg" class="msg"></div>
+  </div>
+
+<script>
+  var currentPath = '/';
+  var selectedPath = '';
+
+  function showMsg(el, text, isError) {
+    el.className = 'msg ' + (isError ? 'err' : 'ok');
+    el.textContent = text;
+  }
+
+  function basename(p) {
+    return p.replace(/\\/g, '/').replace(/\/$/, '').split('/').pop() || p;
+  }
+
+  async function loadStatus() {
+    try {
+      var r = await fetch('/api/reader');
+      var d = await r.json();
+      var html = '';
+      var cur = d.currentBook || '';
+      var pend = d.pendingOpen || '';
+      html += '<div class="status-row"><span class="status-label">Current book</span>';
+      if (cur) {
+        html += '<span class="status-value">' + escHtml(basename(cur)) + '</span>';
+      } else {
+        html += '<span class="status-value" style="color:var(--label-color)">None</span>';
+      }
+      html += '</div>';
+      html += '<div class="status-row"><span class="status-label">Queued to open</span>';
+      if (pend) {
+        html += '<span class="status-value">' + escHtml(basename(pend)) + '<span class="pending-badge">pending restart</span></span>';
+      } else {
+        html += '<span class="status-value" style="color:var(--label-color)">None</span>';
+      }
+      html += '</div>';
+      document.getElementById('status-content').innerHTML = html;
+    } catch(e) {
+      document.getElementById('status-content').innerHTML = '<span style="color:var(--label-color)">Could not load status.</span>';
+    }
+  }
+
+  function escHtml(s) {
+    return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+
+  function buildBreadcrumb(path) {
+    var parts = path.replace(/\/$/, '').split('/').filter(Boolean);
+    var html = '<a onclick="navigate(\'/\')">Root</a>';
+    var acc = '';
+    for (var i = 0; i < parts.length; i++) {
+      acc += '/' + parts[i];
+      var p = acc;
+      html += ' <span>/</span> ';
+      if (i < parts.length - 1) {
+        html += '<a onclick="navigate(\'' + escHtml(p) + '\')">' + escHtml(parts[i]) + '</a>';
+      } else {
+        html += '<span>' + escHtml(parts[i]) + '</span>';
+      }
+    }
+    document.getElementById('breadcrumb').innerHTML = html;
+  }
+
+  async function navigate(path) {
+    currentPath = path;
+    buildBreadcrumb(path);
+    var list = document.getElementById('file-list');
+    list.innerHTML = '<li class="loading">Loading…</li>';
+    try {
+      var r = await fetch('/api/files?path=' + encodeURIComponent(path));
+      var items = await r.json();
+      list.innerHTML = '';
+      if (path !== '/') {
+        var parent = path.replace(/\/[^\/]*$/, '') || '/';
+        var li = document.createElement('li');
+        li.className = 'file-item';
+        li.innerHTML = '<span class="file-icon">📁</span><span class="file-name">..</span>';
+        li.onclick = function() { navigate(parent); };
+        list.appendChild(li);
+      }
+      items.sort(function(a, b) {
+        if (a.isDirectory !== b.isDirectory) return a.isDirectory ? -1 : 1;
+        return a.name.localeCompare(b.name);
+      });
+      items.forEach(function(item) {
+        var fullPath = (path === '/' ? '' : path) + '/' + item.name;
+        var li = document.createElement('li');
+        li.className = 'file-item';
+        if (!item.isDirectory && item.isEpub) {
+          if (fullPath === selectedPath) li.classList.add('selected');
+          li.innerHTML = '<span class="file-icon">📖</span><span class="file-name">' + escHtml(item.name) + '</span>';
+          li.onclick = function() { selectBook(fullPath, item.name); };
+        } else if (item.isDirectory) {
+          li.innerHTML = '<span class="file-icon">📁</span><span class="file-name">' + escHtml(item.name) + '</span>';
+          li.onclick = function() { navigate(fullPath); };
+        } else {
+          li.innerHTML = '<span class="file-icon">📄</span><span class="file-name file-dir">' + escHtml(item.name) + '</span>';
+        }
+        list.appendChild(li);
+      });
+      if (list.children.length === 0) {
+        list.innerHTML = '<li style="padding:12px;color:var(--label-color)">No files here.</li>';
+      }
+    } catch(e) {
+      showMsg(document.getElementById('file-msg'), 'Failed to load file list.', true);
+    }
+  }
+
+  function selectBook(path, name) {
+    selectedPath = path;
+    document.getElementById('selected-label').textContent = name;
+    document.getElementById('open-btn').disabled = false;
+    document.querySelectorAll('.file-item').forEach(function(li) {
+      li.classList.toggle('selected', li.querySelector('.file-name') && li.querySelector('.file-name').textContent === name && !li.querySelector('.file-dir'));
+    });
+  }
+
+  async function queueOpen() {
+    var btn = document.getElementById('open-btn');
+    var msg = document.getElementById('open-msg');
+    btn.disabled = true;
+    btn.textContent = 'Saving…';
+    try {
+      var r = await fetch('/api/reader/open', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: selectedPath })
+      });
+      var d = await r.json();
+      if (d.ok) {
+        showMsg(msg, 'Queued! Exit File Transfer mode to open the book.', false);
+        loadStatus();
+      } else {
+        showMsg(msg, 'Error: ' + (d.error || 'Unknown error'), true);
+        btn.disabled = false;
+      }
+    } catch(e) {
+      showMsg(msg, 'Request failed.', true);
+      btn.disabled = false;
+    }
+    btn.textContent = 'Open on Device';
+  }
+
+  loadStatus();
+  navigate('/');
+</script>
+</body>
+</html>

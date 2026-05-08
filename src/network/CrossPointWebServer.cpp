@@ -12,6 +12,7 @@
 #include <cstring>
 
 #include "CrossPointSettings.h"
+#include "CrossPointState.h"
 #include "FontInstaller.h"
 #include "OpdsServerStore.h"
 #include "SdCardFontGlobals.h"
@@ -23,6 +24,7 @@
 #include "html/FilesPageHtml.generated.h"
 #include "html/FontsPageHtml.generated.h"
 #include "html/HomePageHtml.generated.h"
+#include "html/RemotePageHtml.generated.h"
 #include "html/SettingsPageHtml.generated.h"
 #include "html/WelcomePageHtml.generated.h"
 #include "html/js/jszip_minJs.generated.h"
@@ -223,6 +225,11 @@ void CrossPointWebServer::begin() {
   server->on("/api/wifi", HTTP_GET, [this] { handleGetWifiNetworks(); });
   server->on("/api/wifi", HTTP_POST, [this] { handlePostWifiNetwork(); });
   server->on("/api/wifi/delete", HTTP_POST, [this] { handleDeleteWifiNetwork(); });
+
+  // Remote control endpoints
+  server->on("/remote", HTTP_GET, [this] { handleRemotePage(); });
+  server->on("/api/reader", HTTP_GET, [this] { handleGetReaderState(); });
+  server->on("/api/reader/open", HTTP_POST, [this] { handlePostReaderOpen(); });
 
   server->onNotFound([this] { handleNotFound(); });
   LOG_DBG("WEB", "[MEM] Free heap after route setup: %d bytes", ESP.getFreeHeap());
@@ -2476,4 +2483,53 @@ void CrossPointWebServer::onWebSocketEvent(uint8_t num, WStype_t type, uint8_t* 
     default:
       break;
   }
+}
+
+// ---- Remote Control API ----
+
+void CrossPointWebServer::handleRemotePage() const {
+  sendHtmlContent(server.get(), RemotePageHtml, sizeof(RemotePageHtml));
+}
+
+void CrossPointWebServer::handleGetReaderState() const {
+  JsonDocument doc;
+  doc["currentBook"] = APP_STATE.openEpubPath;
+  doc["pendingOpen"] = APP_STATE.pendingRemoteOpenPath;
+  String json;
+  serializeJson(doc, json);
+  server->send(200, "application/json", json);
+}
+
+void CrossPointWebServer::handlePostReaderOpen() {
+  if (!server->hasArg("plain")) {
+    server->send(400, "application/json", "{\"ok\":false,\"error\":\"Missing body\"}");
+    return;
+  }
+
+  String body = server->arg("plain");
+  JsonDocument req;
+  if (deserializeJson(req, body) != DeserializationError::Ok) {
+    server->send(400, "application/json", "{\"ok\":false,\"error\":\"Invalid JSON\"}");
+    return;
+  }
+
+  const std::string path = req["path"] | std::string("");
+  if (path.empty()) {
+    server->send(400, "application/json", "{\"ok\":false,\"error\":\"Missing path\"}");
+    return;
+  }
+
+  if (!Storage.exists(path.c_str())) {
+    server->send(404, "application/json", "{\"ok\":false,\"error\":\"File not found\"}");
+    return;
+  }
+
+  APP_STATE.pendingRemoteOpenPath = path;
+  if (!APP_STATE.saveToFile()) {
+    server->send(500, "application/json", "{\"ok\":false,\"error\":\"Failed to save state\"}");
+    return;
+  }
+
+  LOG_DBG("WEB", "Remote open queued: %s", path.c_str());
+  server->send(200, "application/json", "{\"ok\":true}");
 }

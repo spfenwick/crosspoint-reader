@@ -15,6 +15,7 @@ Welcome to the **CrossPoint** firmware. This guide outlines the hardware control
     - [3.4 Recent Books Screen](#34-recent-books-screen)
     - [3.5 File Transfer Screen](#35-file-transfer-screen)
       - [3.5.1 Calibre Wireless Transfers](#351-calibre-wireless-transfers)
+      - [3.5.2 Remote Control](#352-remote-control)
     - [3.6 Settings](#36-settings)
       - [3.6.1 Display](#361-display)
       - [3.6.2 Reader](#362-reader)
@@ -113,6 +114,24 @@ CrossPoint supports sending books from Calibre using the CrossPoint Reader devic
 2. On the device: File Transfer → Connect to Calibre → Join a network.
 3. Make sure your computer is on the same WiFi network.
 4. In Calibre, click "Send to device" to transfer books.
+
+### 3.5.2 Remote Control
+
+While in File Transfer mode, the device hosts a **Remote Control** page at `/remote` in the web UI. This lets you queue a book to open from any browser on the same network — without touching the device.
+
+**How to use it:**
+
+1. Enter **File Transfer** mode on the device and connect to a WiFi network (or create a hotspot).
+2. Note the device's IP address shown on screen.
+3. Open a browser on your phone or computer and go to `http://<device-ip>/remote`.  
+   You can also click **Remote Control** from the welcome page (`http://<device-ip>/`).
+4. Browse your library and click a book to select it.
+5. Click **Open on Device**.
+6. On the device, press **Back** to exit File Transfer mode.  
+   The device will restart and open the selected book automatically.
+
+> [!NOTE]
+> Hold the **Back** button while the device restarts to cancel the queued open and return to the home screen instead.
 
 ### 3.6 Settings
 

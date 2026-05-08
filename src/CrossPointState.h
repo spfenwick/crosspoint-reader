@@ -90,6 +90,8 @@ class CrossPointState {
   bool lastSleepFromReader = false;
   KOReaderSyncSessionState koReaderSyncSession;
   PendingBookmarkJumpState pendingBookmarkJump;
+  // Book path queued via the web remote control page; opened on next boot.
+  std::string pendingRemoteOpenPath;
   ~CrossPointState() = default;
 
   // Get singleton instance

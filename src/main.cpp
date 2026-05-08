@@ -264,18 +264,32 @@ void setup() {
   RECENT_BOOKS.loadFromFile();
   GLOBAL_BOOKMARKS.load();
 
-  // Boot to home screen if no book is open, last sleep was not from reader, back button is held, or reader activity
-  // crashed (indicated by readerActivityLoadCount > 0)
-  if (APP_STATE.openEpubPath.empty() || !APP_STATE.lastSleepFromReader ||
-      mappedInputManager.isPressed(MappedInputManager::Button::Back) || APP_STATE.readerActivityLoadCount > 0) {
-    activityManager.goHome();
-  } else {
-    // Clear app state to avoid getting into a boot loop if the epub doesn't load
-    const auto path = APP_STATE.openEpubPath;
-    APP_STATE.openEpubPath = "";
+  // Handle a book queued via the web remote control page.
+  // Takes precedence over the normal resume-on-wake path, but still respects the back-button
+  // escape hatch and the crash-detection guard.
+  if (!APP_STATE.pendingRemoteOpenPath.empty() &&
+      !mappedInputManager.isPressed(MappedInputManager::Button::Back) &&
+      APP_STATE.readerActivityLoadCount == 0) {
+    const auto path = APP_STATE.pendingRemoteOpenPath;
+    APP_STATE.pendingRemoteOpenPath = "";
     APP_STATE.readerActivityLoadCount++;
     APP_STATE.saveToFile();
     activityManager.goToReader(path);
+  } else {
+    APP_STATE.pendingRemoteOpenPath = "";
+    // Boot to home screen if no book is open, last sleep was not from reader, back button is held, or reader activity
+    // crashed (indicated by readerActivityLoadCount > 0)
+    if (APP_STATE.openEpubPath.empty() || !APP_STATE.lastSleepFromReader ||
+        mappedInputManager.isPressed(MappedInputManager::Button::Back) || APP_STATE.readerActivityLoadCount > 0) {
+      activityManager.goHome();
+    } else {
+      // Clear app state to avoid getting into a boot loop if the epub doesn't load
+      const auto path = APP_STATE.openEpubPath;
+      APP_STATE.openEpubPath = "";
+      APP_STATE.readerActivityLoadCount++;
+      APP_STATE.saveToFile();
+      activityManager.goToReader(path);
+    }
   }
 }
 
